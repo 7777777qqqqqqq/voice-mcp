@@ -1,36 +1,46 @@
 // MCP Voice Service for Vercel — 让AI能说话
 const MOSS_API = 'https://api.mosi.cn/v1/audio/speech';
 
+// 手动解析 JSON body（Vercel 有时不自解析）
+async function parseBody(req) {
+  return new Promise((resolve) => {
+    let body = '';
+    req.on('data', chunk => body += chunk);
+    req.on('end', () => {
+      try { resolve(JSON.parse(body)); }
+      catch { resolve({}); }
+    });
+  });
+}
+
 export default async function handler(req, res) {
-  // CORS头——让Operit AI能访问
+  // CORS头
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+  res.setHeader('Content-Type', 'application/json');
 
   if (req.method === 'OPTIONS') return res.status(200).end();
 
-  const url = new URL(req.url, `http://${req.headers.host}`);
-
   // GET /mcp — 健康检查
   if (req.method === 'GET') {
-    return res.json({ status: 'ok', service: 'voice-mcp', version: '1.0.0' });
+    return res.status(200).json({ status: 'ok', service: 'voice-mcp', version: '1.0.0' });
   }
 
   if (req.method !== 'POST') return res.status(405).end();
 
   try {
-    const body = req.body || {};
+    const body = await parseBody(req);
     const { method, params, id = null } = body;
 
-    // tools/list — 返回工具列表
+    // tools/list
     if (method === 'tools/list') {
-      return res.json({
-        jsonrpc: '2.0',
-        id,
+      return res.status(200).json({
+        jsonrpc: '2.0', id,
         result: {
           tools: [{
             name: 'speak',
-            description: '用柒柒的克隆音色说话——把文字变成语音播放出来',
+            description: '用柒柒的克隆音色说话',
             inputSchema: {
               type: 'object',
               properties: {
@@ -43,17 +53,15 @@ export default async function handler(req, res) {
       });
     }
 
-    // tools/call — 调用语音合成
+    // tools/call
     if (method === 'tools/call') {
       const { name, arguments: args } = params || {};
       if (name !== 'speak' || !args?.text) {
-        return res.json({
+        return res.status(200).json({
           jsonrpc: '2.0', id,
           error: { code: -32602, message: 'Invalid params' }
         });
       }
-
-      console.log('[voice-mcp] Speaking:', args.text);
 
       const ttsRes = await fetch(MOSS_API, {
         method: 'POST',
@@ -77,7 +85,7 @@ export default async function handler(req, res) {
 
       const ttsData = await ttsRes.json();
 
-      return res.json({
+      return res.status(200).json({
         jsonrpc: '2.0', id,
         result: {
           content: [{ type: 'audio', url: ttsData.url }],
@@ -86,7 +94,7 @@ export default async function handler(req, res) {
       });
     }
 
-    return res.json({
+    return res.status(200).json({
       jsonrpc: '2.0', id,
       error: { code: -32601, message: `Method not found: ${method}` }
     });
