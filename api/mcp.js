@@ -9,7 +9,7 @@ async function parseBody(req) {
     req.on('data', chunk => body += chunk);
     req.on('end', () => {
       try { resolve(JSON.parse(body)); }
-      catch { resolve({}); }
+      catch (e) { resolve({}); }
     });
   });
 }
