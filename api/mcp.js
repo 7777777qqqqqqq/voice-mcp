@@ -2,108 +2,105 @@
 // MCP Voice Service for Vercel — 让AI能说话
 const MOSS_API = 'https://api.mosi.cn/v1/audio/speech';
 
-// 手动解析 JSON body（Vercel 有时不自解析）
+// 解析 JSON body（带超时兜底，防止卡死）
 async function parseBody(req) {
-  return new Promise((resolve) => {
-    let body = '';
-    req.on('data', chunk => body += chunk);
-    req.on('end', () => {
-      try { resolve(JSON.parse(body)); }
-      catch (e) { resolve({}); }
+  try {
+    const text = await new Promise((resolve) => {
+      let body = '';
+      req.on('data', chunk => { body += chunk; });
+      req.on('end', () => resolve(body));
+      // 3 秒超时兜底——如果 body 一直读不完，就给空值
+      setTimeout(() => resolve('{}'), 3000);
     });
-  });
+    return JSON.parse(text || '{}');
+  } catch (e) {
+    return {};
+  }
 }
 
 export default async function handler(req, res) {
-  // CORS头
-  res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
   res.setHeader('Content-Type', 'application/json');
 
-  if (req.method === 'OPTIONS') return res.status(200).end();
-
-  // GET /mcp — 健康检查
-  if (req.method === 'GET') {
-    return res.status(200).json({ status: 'ok', service: 'voice-mcp', version: '1.0.0' });
-  }
-
-  if (req.method !== 'POST') return res.status(405).end();
-
   try {
-    const body = await parseBody(req);
-    const { method, params, id = null } = body;
-
-    // tools/list
-    if (method === 'tools/list') {
+    // === GET: 健康检查 ===
+    if (req.method === 'GET') {
       return res.status(200).json({
-        jsonrpc: '2.0', id,
-        result: {
-          tools: [{
-            name: 'speak',
-            description: '用柒柒的克隆音色说话',
-            inputSchema: {
-              type: 'object',
-              properties: {
-                text: { type: 'string', description: '要说的文字内容' }
-              },
-              required: ['text']
-            }
-          }]
-        }
+        status: 'ok',
+        message: 'MCP Voice Service is running on Vercel',
+        endpoint: '/mcp',
+        method: 'POST'
       });
     }
 
-    // tools/call
-    if (method === 'tools/call') {
-      const { name, arguments: args } = params || {};
-      if (name !== 'speak' || !args?.text) {
-        return res.status(200).json({
-          jsonrpc: '2.0', id,
-          error: { code: -32602, message: 'Invalid params' }
+    // === POST: 语音生成 ===
+    if (req.method === 'POST') {
+      const body = await parseBody(req);
+      const params = body.params || {};
+      const inputText = params?.arguments?.text || params?.text || '';
+
+      if (!inputText) {
+        return res.status(400).json({
+          jsonrpc: '2.0',
+          id: body.id || null,
+          error: { code: -32602, message: 'Missing text parameter' }
         });
       }
 
-      const ttsRes = await fetch(MOSS_API, {
+      const apiKey = process.env.MOSS_API_KEY;
+      const voiceId = process.env.MOSS_VOICE_ID || '0376f20a';
+
+      if (!apiKey) {
+        return res.status(500).json({
+          jsonrpc: '2.0',
+          id: body.id || null,
+          error: { code: -32000, message: 'MOSS_API_KEY not configured' }
+        });
+      }
+
+      const mossResponse = await fetch(MOSS_API, {
         method: 'POST',
         headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${process.env.MOSS_API_KEY}`
+          'Authorization': `Bearer ${apiKey}`,
+          'Content-Type': 'application/json'
         },
         body: JSON.stringify({
-          model: 'moss-tts',
-          voice_id: process.env.MOSS_VOICE_ID || '0376f20a',
-          input: args.text,
-          response_format: 'mp3',
-          delivery_method: 'url'
+          model: 'moss-speech-tts',
+          input: inputText,
+          voice: { id: voiceId }
         })
       });
 
-      if (!ttsRes.ok) {
-        const errText = await ttsRes.text();
-        throw new Error(`TTS API Error ${ttsRes.status}: ${errText}`);
+      if (!mossResponse.ok) {
+        return res.status(502).json({
+          jsonrpc: '2.0',
+          id: body.id || null,
+          error: { code: -32001, message: `MOSS API error: ${mossResponse.status}` }
+        });
       }
 
-      const ttsData = await ttsRes.json();
+      const audioBuffer = await mossResponse.arrayBuffer();
+      const base64Audio = Buffer.from(audioBuffer).toString('base64');
 
       return res.status(200).json({
-        jsonrpc: '2.0', id,
+        jsonrpc: '2.0',
+        id: body.id || null,
         result: {
-          content: [{ type: 'audio', url: ttsData.url }],
-          isError: false
+          content: [
+            { type: 'audio', data: base64Audio, mimeType: 'audio/mpeg' }
+          ]
         }
       });
     }
 
-    return res.status(200).json({
-      jsonrpc: '2.0', id,
-      error: { code: -32601, message: `Method not found: ${method}` }
+    // === 其他方法：405 ===
+    return res.status(405).json({
+      jsonrpc: '2.0',
+      error: { code: -32600, message: 'Method not allowed' }
     });
 
   } catch (err) {
-    console.error('[voice-mcp] Error:', err);
     return res.status(500).json({
-      jsonrpc: '2.0', id: null,
+      jsonrpc: '2.0',
       error: { code: -32603, message: err.message }
     });
   }
